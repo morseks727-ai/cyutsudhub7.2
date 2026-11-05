@@ -1,0 +1,1269 @@
+--[[ Cyutsud hub ]]
+
+local function _try(fn, ...)
+    local ok, err = pcall(fn, ...)
+    return ok, err
+end
+
+_try(function() if setthreadidentity then setthreadidentity(8) end end)
+_try(function() if setidentity then setidentity(8) end end)
+_try(function() if set_thread_identity then set_thread_identity(8) end end)
+_try(function() if syn and syn.set_thread_identity then syn.set_thread_identity(8) end end)
+_try(function() if setthreadcontext then setthreadcontext(8) end end)
+_try(function() if setcontext then setcontext(8) end end)
+_try(function() if set_thread_capability then set_thread_capability("Plugin") end end)
+_try(function() if setthreadcapability then setthreadcapability("Plugin") end end)
+
+if type(cloneref) ~= "function" then
+    local _cr = rawget(getfenv(), "cloneref")
+        or rawget(getfenv(), "clonereference")
+        or (syn and syn.cloneref)
+        or (getrenv and getrenv().cloneref)
+    if type(_cr) == "function" then
+        cloneref = _cr
+    else
+        cloneref = function(o) return o end
+    end
+end
+
+do
+    local _origGetService = game.GetService
+    local _safeGetService = function(self, name)
+        local ok, svc = pcall(_origGetService, self, name)
+        if ok then return svc end
+        task.wait()
+        return _origGetService(self, name)
+    end
+    _G.__SafeGetService = _safeGetService
+end
+
+pcall(function()
+    if type(setfpscap) == "function" then
+        setfpscap(9999)
+    end
+end)
+
+----------------------------------------------------------------
+-- Patch PlotClient / NumberUtils nil errors
+-- NumberUtils.ToString → math.abs(nil)  |  UpdateClaim mul on nil
+----------------------------------------------------------------
+pcall(function()
+    local _abs = math.abs
+    math.abs = function(x)
+        if type(x) ~= "number" then
+            x = tonumber(x)
+        end
+        if type(x) ~= "number" then
+            return 0
+        end
+        return _abs(x)
+    end
+end)
+
+pcall(function()
+    local function patchNumberUtils(mod)
+        if type(mod) ~= "table" then return end
+        for _, key in ipairs({ "ToString", "toString", "Format", "format", "Abbreviate", "abbreviate" }) do
+            local fn = mod[key]
+            if type(fn) == "function" then
+                mod[key] = function(n, ...)
+                    if n == nil then n = 0 end
+                    if type(n) ~= "number" then
+                        n = tonumber(n) or 0
+                    end
+                    return fn(n, ...)
+                end
+            end
+        end
+    end
+
+    local rs = game:GetService("ReplicatedStorage")
+    local utils = rs:FindFirstChild("Utils")
+    local nu = utils and utils:FindFirstChild("NumberUtils")
+    if nu then
+        local ok, mod = pcall(require, nu)
+        if ok then patchNumberUtils(mod) end
+    end
+    -- also try Packages path variants
+    pcall(function()
+        local ok, mod = pcall(function()
+            return require(rs:WaitForChild("Utils"):WaitForChild("NumberUtils"))
+        end)
+        if ok then patchNumberUtils(mod) end
+    end)
+end)
+
+-- Soft-sanitize Claim values so PlotClient UpdateClaim does not mul nil
+pcall(function()
+    local function sanitizeClaim(inst)
+        if not inst then return end
+        pcall(function()
+            for _, attr in ipairs({
+                "Generation", "generation", "Income", "Gen",
+                "BaseGeneration", "BaseIncome", "Claim", "Money",
+                "Rate", "Multiplier", "Offline", "Time",
+            }) do
+                local ok, v = pcall(function() return inst:GetAttribute(attr) end)
+                if ok and v == nil then
+                    -- leave unset
+                elseif ok and type(v) ~= "number" and v ~= nil then
+                    local n = tonumber(v)
+                    if n then
+                        pcall(function() inst:SetAttribute(attr, n) end)
+                    end
+                end
+            end
+            for _, ch in ipairs(inst:GetChildren()) do
+                if ch:IsA("NumberValue") or ch:IsA("IntValue") or ch:IsA("NumberConstraint") then
+                    if ch.Value == nil then
+                        pcall(function() ch.Value = 0 end)
+                    end
+                end
+            end
+        end)
+    end
+
+    local function scanPlots()
+        local plots = workspace:FindFirstChild("Plots")
+        if not plots then return end
+        for _, plot in ipairs(plots:GetChildren()) do
+            local pods = plot:FindFirstChild("AnimalPodiums")
+            if pods then
+                for _, pod in ipairs(pods:GetChildren()) do
+                    local claim = pod:FindFirstChild("Claim")
+                    if claim then sanitizeClaim(claim) end
+                    sanitizeClaim(pod)
+                end
+            end
+        end
+    end
+
+    task.spawn(function()
+        for _ = 1, 8 do
+            task.wait(0.5)
+            pcall(scanPlots)
+        end
+        -- light periodic pass (cheap)
+        while not rawget(_G, "_FH_SHUTDOWN") do
+            task.wait(5)
+            pcall(scanPlots)
+        end
+    end)
+end)
+
+local _cloneref_safe = (type(cloneref) == "function") and cloneref or function(o) return o end
+Services = setmetatable({}, {
+    __index = function(self, name)
+        local success, cache = pcall(function()
+            return _cloneref_safe(game:GetService(name))
+        end)
+        if success then
+            rawset(self, name, cache)
+            return cache
+        else
+            error("Invalid Service: " .. tostring(name))
+        end
+    end
+})
+
+task.spawn(function()
+    local TweenService     = game:GetService("TweenService")
+    local UserInputService = game:GetService("UserInputService")
+    local RunService       = game:GetService("RunService")
+    local Players          = game:GetService("Players")
+    local HttpService      = game:GetService("HttpService")
+    local GuiService       = game:GetService("GuiService")
+
+    local LPH_NO_VIRTUALIZE = function(f) return f end
+
+    if not Players.LocalPlayer then
+        local _t1 = tick()
+        repeat task.wait(0.05) until Players.LocalPlayer or (tick() - _t1 > 5)
+    end
+    do
+        local lp = Players.LocalPlayer
+        if lp and not lp:FindFirstChildOfClass("PlayerGui") then
+            lp:WaitForChild("PlayerGui", 5)
+        end
+    end
+
+    _G._FH_CYUTSUD_GEN = (_G._FH_CYUTSUD_GEN or 0) + 1
+    local _GEN = _G._FH_CYUTSUD_GEN
+    _G._FH_SHUTDOWN = false
+    _G._FH_SHUTDOWN_DONE = false
+
+    local function _isShuttingDown()
+        if _G._FH_SHUTDOWN then return true end
+        if _GEN ~= _G._FH_CYUTSUD_GEN then return true end
+        local lp = Players.LocalPlayer
+        if not lp or lp.Parent == nil then return true end
+        return false
+    end
+    _G._FH_IS_SHUTDOWN = _isShuttingDown
+    _G._FH_TEARDOWN = {}
+
+    local function _doTeardown()
+        if _G._FH_SHUTDOWN_DONE then return end
+        _G._FH_SHUTDOWN_DONE = true
+        _G._FH_SHUTDOWN = true
+        for _, fn in ipairs(_G._FH_TEARDOWN) do
+            pcall(fn)
+        end
+    end
+
+    pcall(function()
+        local lp = Players.LocalPlayer
+        if lp then
+            lp.AncestryChanged:Connect(function(_, parent)
+                if parent == nil then _doTeardown() end
+            end)
+        end
+    end)
+    pcall(function()
+        Players.PlayerRemoving:Connect(function(p)
+            if p == Players.LocalPlayer then _doTeardown() end
+        end)
+    end)
+    pcall(function()
+        game:BindToClose(function() _doTeardown() end)
+    end)
+
+    pcall(function()
+        local seen = {}
+        local function purge(parent)
+            if not parent or seen[parent] then return end
+            seen[parent] = true
+            for _, ch in ipairs(parent:GetChildren()) do
+                if ch:IsA("ScreenGui") and ch.Name == "CyutsudHub" then
+                    pcall(function() ch:Destroy() end)
+                end
+            end
+        end
+        if typeof(gethui) == "function" then pcall(function() purge(gethui()) end) end
+        pcall(function() purge(game:GetService("CoreGui")) end)
+        local lp = Players.LocalPlayer
+        if lp then pcall(function() purge(lp:FindFirstChildOfClass("PlayerGui")) end) end
+        if _G._FH_CYUTSUD_GUI then pcall(function() _G._FH_CYUTSUD_GUI:Destroy() end) end
+    end)
+    _G._FH_CYUTSUD_GUI = nil
+
+    local T = {
+        Bg          = Color3.fromRGB(14,  10,  22),
+        BgDeep      = Color3.fromRGB(8,    6,  14),
+        Side        = Color3.fromRGB(20,  14,  32),
+        SideHover   = Color3.fromRGB(36,  24,  56),
+        SideActive  = Color3.fromRGB(44,  28,  68),
+        Card        = Color3.fromRGB(24,  16,  38),
+        CardHover   = Color3.fromRGB(34,  22,  52),
+        Line        = Color3.fromRGB(0,    0,   0),
+        Soft        = Color3.fromRGB(28,  18,  42),
+        Text        = Color3.fromRGB(245, 240, 255),
+        TextDim     = Color3.fromRGB(170, 150, 200),
+        TextMute    = Color3.fromRGB(110,  95, 140),
+        Primary     = Color3.fromRGB(168,  85, 247),
+        White       = Color3.fromRGB(255, 255, 255),
+        Green       = Color3.fromRGB(168,  85, 247),
+    }
+
+    local F  = TweenInfo.new(0.12, Enum.EasingStyle.Quad)
+    local M  = TweenInfo.new(0.2,  Enum.EasingStyle.Quad)
+    local PG = TweenInfo.new(0.18, Enum.EasingStyle.Quart, Enum.EasingDirection.Out)
+
+    local Theme = {
+        c1 = Color3.fromRGB(168, 85, 247),
+        c2 = Color3.fromRGB(76, 29, 149),
+    }
+
+    -- Contrast knob color: primary==secondary → white; both white → black
+    local function _CyutsudKnobOnColor()
+        local p = Color3.fromRGB(168, 85, 247)
+        local s = Color3.fromRGB(255, 255, 255)
+        pcall(function()
+            if Theme and typeof(Theme.c1) == "Color3" then p = Theme.c1 end
+            if T and typeof(T.White) == "Color3" then s = T.White end
+            if typeof(_G.coreTheme) == "table" then
+                if typeof(_G.coreTheme.primary) == "Color3" then p = _G.coreTheme.primary end
+                if typeof(_G.coreTheme.secondary) == "Color3" then s = _G.coreTheme.secondary end
+            end
+        end)
+        local function nearWhite(c)
+            return c.R > 0.92 and c.G > 0.92 and c.B > 0.92
+        end
+        local function near(a, b)
+            return math.abs(a.R - b.R) < 0.04 and math.abs(a.G - b.G) < 0.04 and math.abs(a.B - b.B) < 0.04
+        end
+        if nearWhite(p) and nearWhite(s) then
+            return Color3.fromRGB(12, 12, 16)
+        end
+        if near(p, s) then
+            return Color3.fromRGB(255, 255, 255)
+        end
+        return Color3.fromRGB(255, 255, 255)
+    end
+    _G._CyutsudKnobOnColor = _CyutsudKnobOnColor
+
+
+    local ThemeGrads  = {}
+    local ThemeSolids = {}
+    local ThemeBgFrames = {}
+
+    local function trackBgFrame(frame, role)
+        table.insert(ThemeBgFrames, {frame = frame, role = role})
+    end
+
+    local function RepaintBgs()
+        for _, e in ipairs(ThemeBgFrames) do
+            if e.frame and e.frame.Parent then
+                pcall(function() e.frame.BackgroundColor3 = T[e.role] end)
+            end
+        end
+    end
+
+    local Repaint
+
+    local function SetGuiColor(col)
+        local _h, _s, _v = Color3.toHSV(col)
+        T.Bg         = Color3.fromHSV(_h, _s,           _v)
+        T.BgDeep     = Color3.fromHSV(_h, _s,           math.max(_v * 0.65, 0))
+        T.Side       = Color3.fromHSV(_h, _s * 0.9,     math.min(_v * 1.35, 1))
+        T.SideHover  = Color3.fromHSV(_h, _s * 0.75,    math.min(_v * 1.90, 1))
+        T.SideActive = Color3.fromHSV(_h, _s * 0.75,    math.min(_v * 1.90, 1))
+        T.Card       = Color3.fromHSV(_h, _s * 0.85,    math.min(_v * 1.60, 1))
+        T.CardHover  = Color3.fromHSV(_h, _s * 0.75,    math.min(_v * 2.00, 1))
+        T.Line       = Color3.fromHSV(_h, _s * 0.55,    math.min(_v * 2.80, 0.45))
+        T.Soft       = Color3.fromHSV(_h, _s * 0.80,    math.min(_v * 1.70, 1))
+        RepaintBgs()
+        pcall(function()
+            if Dot2 then Dot2.BackgroundColor3 = T.Bg end
+        end)
+        pcall(function()
+            if type(_G._CyutsudBroadcastTheme) == "function" then
+                _G._CyutsudBroadcastTheme()
+            end
+        end)
+    end
+
+    local function SetAccentColor(col)
+        Theme.c1 = col
+        T.Primary = col
+        T.Green = col
+        local _h, _s, _v = Color3.toHSV(col)
+        Theme.c2 = Color3.fromHSV(_h, math.clamp(_s * 0.75, 0, 1), math.max(_v * 0.32, 0.08))
+        pcall(function()
+            if Dot1 then Dot1.BackgroundColor3 = col end
+        end)
+        pcall(function()
+            if typeof(PageTitle) == "Instance" then PageTitle.TextColor3 = col end
+        end)
+        pcall(function()
+            if _G._FH_ReopenBtn then
+                _G._FH_ReopenBtn.BackgroundColor3 = col
+                local lum = 0.299 * col.R + 0.587 * col.G + 0.114 * col.B
+                _G._FH_ReopenBtn.TextColor3 = (lum > 0.55) and Color3.fromRGB(12, 6, 22) or Color3.fromRGB(255, 255, 255)
+            end
+        end)
+        if type(Repaint) == "function" then
+            pcall(Repaint)
+        end
+        pcall(function()
+            if Root then
+                for _, d in ipairs(Root:GetDescendants()) do
+                    if d.Name == "LogoBadge" or d.Name == "LogoBox" then
+                        d.BackgroundColor3 = col
+                    end
+                end
+            end
+        end)
+        pcall(function()
+            if type(_G._CyutsudBroadcastTheme) == "function" then
+                _G._CyutsudBroadcastTheme()
+            end
+        end)
+    end
+
+    local function themeSeq()
+        local _h, _s, _v = Color3.toHSV(Theme.c1)
+        local _dark = Color3.fromHSV(_h, _s * 0.55, math.max(_v * 0.30, 0))
+        return ColorSequence.new({
+            ColorSequenceKeypoint.new(0,    Theme.c1),
+            ColorSequenceKeypoint.new(0.5,  _dark),
+            ColorSequenceKeypoint.new(1,    Theme.c1),
+        })
+    end
+
+    local function trackSolid(frame, slot)
+        table.insert(ThemeSolids, {frame = frame, slot = slot})
+        frame.BackgroundColor3 = (slot == 1) and Theme.c1 or Theme.c2
+    end
+
+    local function Tween(o, i, p)
+        TweenService:Create(o, i, p):Play()
+    end
+
+    local function Corner(p, r)
+        local c = Instance.new("UICorner")
+        c.CornerRadius = UDim.new(0, r or 12)
+        c.Parent = p
+        return c
+    end
+
+    local function Stroke(p, col, th, trans)
+        local s = Instance.new("UIStroke")
+        s.Color           = col or T.Line
+        s.Thickness       = th or 1
+        s.Transparency    = trans or 0
+        s.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
+        s.Parent          = p
+        return s
+    end
+
+    local function Pad(p, t, b, l, r)
+        local u = Instance.new("UIPadding")
+        u.PaddingTop    = UDim.new(0, t or 0)
+        u.PaddingBottom = UDim.new(0, b or 0)
+        u.PaddingLeft   = UDim.new(0, l or 0)
+        u.PaddingRight  = UDim.new(0, r or 0)
+        u.Parent = p
+    end
+
+    local function Grad(p, _c1, _c2, rot)
+        local g = Instance.new("UIGradient")
+        g.Color    = themeSeq()
+        g.Rotation = rot or 0
+        g.Parent   = p
+        table.insert(ThemeGrads, {grad = g, baseRot = rot or 0, speed = 1})
+        return g
+    end
+
+    local function GradStroke(p, th, trans, rot)
+        local s = Stroke(p, Color3.fromRGB(0, 0, 0), th or 1.8, trans or 0.05)
+        local g = Instance.new("UIGradient")
+        g.Color = themeSeq()
+        g.Rotation = rot or 90
+        g.Parent = s
+        table.insert(ThemeGrads, {grad = g, baseRot = rot or 90, speed = 1})
+        return s
+    end
+
+    Repaint = function()
+        local seq = themeSeq()
+        for _, e in ipairs(ThemeGrads) do
+            if e.grad and e.grad.Parent then
+                pcall(function() e.grad.Color = seq end)
+            end
+        end
+        for _, e in ipairs(ThemeSolids) do
+            if e.frame and e.frame.Parent then
+                pcall(function()
+                    e.frame.BackgroundColor3 = (e.slot == 1) and Theme.c1 or Theme.c2
+                end)
+            end
+        end
+        pcall(function()
+            if typeof(PageTitle) == "Instance" then
+                PageTitle.TextColor3 = Theme.c1
+            end
+        end)
+        T.Primary = Theme.c1
+        T.Green = Theme.c1
+    end
+
+    -- Cyutsud hub logo (embedded) — replaces purple side squares
+    local CYUTSUD_SIDE_IMAGE_FALLBACK = "rbxassetid://122136004623357"
+    local CYUTSUD_SIDE_IMAGE = CYUTSUD_SIDE_IMAGE_FALLBACK
+    local _CyutsudLogoB64 = "removed cuz ts un needed"
+    local function _CyutsudEnsureLogoAsset()
+        local path = "CyutsudHub/cyutsud_logo.png"
+        pcall(function()
+            if makefolder and not (isfolder and isfolder("CyutsudHub")) then
+                makefolder("CyutsudHub")
+            end
+        end)
+        pcall(function()
+            if writefile and (not isfile or not isfile(path)) then
+                local ok, data = pcall(function()
+                    return game:GetService("HttpService"):Base64Decode(_CyutsudLogoB64)
+                end)
+                if not ok or type(data) ~= "string" then
+                    -- manual base64 decode fallback
+                    local b = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/'
+                    local function dec(data)
+                        data = string.gsub(data, '[^'..b..'=]', '')
+                        return (data:gsub('.', function(x)
+                            if x == '=' then return '' end
+                            local r, f = '', (b:find(x)-1)
+                            for i = 6, 1, -1 do
+                                r = r .. (f % 2^i - f % 2^(i-1) > 0 and '1' or '0')
+                            end
+                            return r
+                        end):gsub('%d%d%d?%d?%d?%d?%d?%d?', function(x)
+                            if #x ~= 8 then return '' end
+                            local c = 0
+                            for i = 1, 8 do
+                                c = c + (x:sub(i, i) == '1' and 2^(8-i) or 0)
+                            end
+                            return string.char(c)
+                        end))
+                    end
+                    data = dec(_CyutsudLogoB64)
+                end
+                if type(data) == "string" and #data > 100 then
+                    writefile(path, data)
+                end
+            end
+        end)
+        local asset = nil
+        pcall(function()
+            if type(getcustomasset) == "function" and isfile and isfile(path) then
+                asset = getcustomasset(path)
+            end
+        end)
+        if type(asset) == "string" and asset ~= "" then
+            CYUTSUD_SIDE_IMAGE = asset
+            return asset
+        end
+        CYUTSUD_SIDE_IMAGE = CYUTSUD_SIDE_IMAGE_FALLBACK
+        return CYUTSUD_SIDE_IMAGE
+    end
+    pcall(_CyutsudEnsureLogoAsset)
+    local _CyutsudSideImageBoxes = {}
+
+    local function _CyutsudAttachSideImage(panel, titleBar)
+        if not panel or not panel.Parent then return end
+        pcall(function()
+            local imgAsset = _CyutsudEnsureLogoAsset()
+            -- Skip side image on these panels
+            local SKIP_SIDE = {
+                ["PanelGui_CyutsudQuickPanel"] = true,
+                ["PanelGui_FluxQuickPanel"] = true,
+                ["PanelGui_Booster"] = true,
+                ["PanelGui_Instant Steal"] = true,
+                ["PanelGui_Instant Steal V2"] = true,
+                ["PanelGui_Admin Panel"] = true, -- legacy quick admin
+                ["CyutsudHubBanner"] = true, -- no logo on floating banner
+            }
+            local function isSkipped(inst)
+                local cur = inst
+                while cur do
+                    if SKIP_SIDE[cur.Name] then return true end
+                    cur = cur.Parent
+                end
+                return false
+            end
+            if isSkipped(panel) or (titleBar and isSkipped(titleBar)) then
+                for _, root in ipairs({panel, titleBar}) do
+                    if root then
+                        local ex = root:FindFirstChild("CyutsudSideImage", true)
+                        if ex then pcall(function() ex:Destroy() end) end
+                    end
+                end
+                return
+            end
+
+            local host = titleBar
+            if not host or not host.Parent then
+                host = panel:FindFirstChild("TitleBar")
+                    or panel:FindFirstChild("Header")
+                    or panel:FindFirstChild("CDHdr")
+                    or panel
+            end
+            if not host then return end
+
+            local old = host:FindFirstChild("CyutsudSideImage") or panel:FindFirstChild("CyutsudSideImage")
+            if old then
+                if old:IsA("ImageLabel") then
+                    old.Image = imgAsset
+                    old.BackgroundTransparency = 1
+                elseif old:IsA("Frame") then
+                    old.BackgroundTransparency = 1
+                    local ic = old:FindFirstChild("Icon")
+                    if ic and ic:IsA("ImageLabel") then
+                        ic.Image = imgAsset
+                        ic.BackgroundTransparency = 1
+                    end
+                end
+                return
+            end
+
+            local size = 26
+            if host == panel then
+                size = 32
+            end
+
+            -- Transparent host frame (no purple square)
+            local box = Instance.new("Frame")
+            box.Name = "CyutsudSideImage"
+            box.Size = UDim2.new(0, size, 0, size)
+            box.AnchorPoint = Vector2.new(0, 0.5)
+            if host == panel then
+                box.Position = UDim2.new(0, 8, 0, 8)
+                box.AnchorPoint = Vector2.new(0, 0)
+            else
+                box.Position = UDim2.new(0, 8, 0.5, 0)
+            end
+            box.BackgroundTransparency = 1
+            box.BorderSizePixel = 0
+            local baseZ = math.max(host.ZIndex or 1, panel.ZIndex or 1)
+            box.ZIndex = baseZ + 50
+            box.Parent = host
+
+            local img = Instance.new("ImageLabel")
+            img.Name = "Icon"
+            img.Size = UDim2.new(1, 0, 1, 0)
+            img.Position = UDim2.new(0, 0, 0, 0)
+            img.BackgroundTransparency = 1
+            img.Image = imgAsset
+            img.ScaleType = Enum.ScaleType.Fit
+            img.ZIndex = box.ZIndex + 1
+            img.Parent = box
+            local ic = Instance.new("UICorner")
+            ic.CornerRadius = UDim.new(0, 6)
+            ic.Parent = img
+
+            table.insert(_CyutsudSideImageBoxes, box)
+
+            -- Shift title labels to the right so they don't overlap the square
+            pcall(function()
+                for _, d in ipairs(host:GetChildren()) do
+                    if d:IsA("TextLabel") and d.Name ~= "Icon" then
+                        local pos = d.Position
+                        local left = pos.X.Offset
+                        if left < size + 14 then
+                            d.Position = UDim2.new(pos.X.Scale, size + 14, pos.Y.Scale, pos.Y.Offset)
+                            if d.Size.X.Offset > 0 then
+                                d.Size = UDim2.new(d.Size.X.Scale, math.max(40, d.Size.X.Offset - (size + 4)), d.Size.Y.Scale, d.Size.Y.Offset)
+                            end
+                        end
+                    end
+                end
+            end)
+        end)
+    end
+    _G._CyutsudAttachSideImage = _CyutsudAttachSideImage
+
+    local function _CyutsudStyleLikeHub(panel, titleBar)
+        if not panel or not panel.Parent then return end
+        pcall(function()
+            panel.BackgroundColor3 = T.Bg
+            panel.BackgroundTransparency = 0.02
+            panel.BorderSizePixel = 0
+        end)
+        pcall(function() trackBgFrame(panel, "Bg") end)
+
+        pcall(function()
+            local c = panel:FindFirstChildOfClass("UICorner")
+            if not c then
+                c = Instance.new("UICorner")
+                c.Parent = panel
+            end
+            c.CornerRadius = UDim.new(0, 14)
+        end)
+
+        pcall(function()
+            for _, ch in ipairs(panel:GetChildren()) do
+                if ch:IsA("UIStroke") and not ch:FindFirstChildOfClass("UIGradient") then
+                    ch:Destroy()
+                elseif ch:IsA("UIStroke") then
+                    local g = ch:FindFirstChildOfClass("UIGradient")
+                    if g then
+                        g.Color = themeSeq()
+                        g.Rotation = 90
+                        table.insert(ThemeGrads, {grad = g, baseRot = 90, speed = 1})
+                    end
+                    ch.Color = Color3.fromRGB(0, 0, 0)
+                    ch.Thickness = 1.8
+                    ch.Transparency = 0.05
+                end
+            end
+            if not panel:FindFirstChildOfClass("UIStroke") then
+                GradStroke(panel, 1.6, 0.25, 90)
+            end
+        end)
+
+        pcall(function()
+            if not panel:FindFirstChild("Shadow") then
+                local shadow = Instance.new("ImageLabel")
+                shadow.Name = "Shadow"
+                shadow.Size = UDim2.new(1, 40, 1, 40)
+                shadow.Position = UDim2.new(0, -20, 0, -20)
+                shadow.BackgroundTransparency = 1
+                shadow.Image = "rbxassetid://5028857084"
+                shadow.ImageColor3 = Color3.fromRGB(0, 0, 0)
+                shadow.ImageTransparency = 0.5
+                shadow.ScaleType = Enum.ScaleType.Slice
+                shadow.SliceCenter = Rect.new(24, 24, 276, 276)
+                shadow.ZIndex = math.max((panel.ZIndex or 1) - 1, 0)
+                shadow.Parent = panel
+            end
+        end)
+
+        if titleBar and titleBar.Parent then
+            pcall(function()
+                titleBar.BackgroundColor3 = T.BgDeep
+                titleBar.BackgroundTransparency = 0.05
+                titleBar.BorderSizePixel = 0
+            end)
+            pcall(function() trackBgFrame(titleBar, "BgDeep") end)
+            pcall(function()
+                local c = titleBar:FindFirstChildOfClass("UICorner")
+                if not c then
+                    c = Instance.new("UICorner")
+                    c.Parent = titleBar
+                end
+                c.CornerRadius = UDim.new(0, 12)
+            end)
+            pcall(function()
+                local accent = titleBar:FindFirstChild("HubAccent")
+                if not accent then
+                    accent = Instance.new("Frame")
+                    accent.Name = "HubAccent"
+                    accent.Size = UDim2.new(1, 0, 0, 2)
+                    accent.Position = UDim2.new(0, 0, 1, -2)
+                    accent.BorderSizePixel = 0
+                    accent.ZIndex = (titleBar.ZIndex or 1) + 2
+                    accent.Parent = titleBar
+                end
+                accent.BackgroundColor3 = Theme.c1
+                trackSolid(accent, 1)
+            end)
+            pcall(function()
+                for _, d in ipairs(titleBar:GetChildren()) do
+                    if d:IsA("TextLabel") then
+                        d.TextColor3 = T.Text
+                        d.Font = Enum.Font.GothamBold
+                    end
+                end
+            end)
+        end
+
+        pcall(function()
+            _CyutsudAttachSideImage(panel, titleBar)
+        end)
+    end
+    _G._CyutsudStyleLikeHub = _CyutsudStyleLikeHub
+
+    local _gradPhase = 0
+    local _gradAccum = 0
+    local _GRAD_TICK = 1/15
+    local _sharedFps = 0
+    local _sharedFc  = 0
+    local _sharedFt  = 0
+    local _bannerStatsRef = nil
+    local _bannerLast = ""
+    local _sharedFlowPhase = 0
+
+    local function Lbl(p, txt, sz, col, font, align)
+        local l = Instance.new("TextLabel")
+        l.Text                   = txt or ""
+        l.TextSize               = sz or 12
+        l.TextColor3             = col or T.Text
+        l.Font                   = font or Enum.Font.Gotham
+        l.BackgroundTransparency = 1
+        l.TextXAlignment         = align or Enum.TextXAlignment.Left
+        l.Parent                 = p
+        return l
+    end
+
+    local GUI = Instance.new("ScreenGui")
+    GUI.Name           = "CyutsudHub"
+    GUI.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+    GUI.ResetOnSpawn   = false
+    GUI.IgnoreGuiInset = true
+    GUI.Enabled        = true
+    GUI.DisplayOrder   = 999999
+
+    do
+        local parented = false
+        local function tryParent(p)
+            if parented or not p then return end
+            local ok = pcall(function() GUI.Parent = p end)
+            if ok and GUI.Parent == p then parented = true end
+        end
+
+        local _exec = ""
+        pcall(function()
+            if type(identifyexecutor) == "function" then
+                _exec = (identifyexecutor() or ""):lower()
+            end
+        end)
+        local _isMaddium = _exec:find("maddium") ~= nil
+
+        if _isMaddium then
+            pcall(function()
+                local lp = Players.LocalPlayer or Players.PlayerAdded:Wait()
+                local pg = lp:FindFirstChildOfClass("PlayerGui") or lp:WaitForChild("PlayerGui", 10)
+                tryParent(pg)
+            end)
+        end
+        if not parented then
+            pcall(function()
+                if type(gethui) == "function" then tryParent(gethui()) end
+            end)
+        end
+        pcall(function()
+            if type(protect_gui) == "function" then
+                protect_gui(GUI)
+            elseif syn and syn.protect_gui then
+                syn.protect_gui(GUI)
+            end
+        end)
+        if not parented then
+            pcall(function()
+                local _cr = (type(cloneref) == "function") and cloneref or function(x) return x end
+                tryParent(_cr(game:GetService("CoreGui")))
+            end)
+        end
+        if not parented then
+            local lp = Players.LocalPlayer or Players.PlayerAdded:Wait()
+            local pg = lp:FindFirstChildOfClass("PlayerGui") or lp:WaitForChild("PlayerGui", 10)
+            tryParent(pg)
+        end
+
+        GUI.AncestryChanged:Connect(function()
+            if GUI.Parent ~= nil then return end
+            parented = false
+            task.defer(function()
+                pcall(function()
+                    if typeof(gethui) == "function" then tryParent(gethui()) end
+                end)
+                if not parented then
+                    pcall(function()
+                        local _cr = typeof(cloneref) == "function" and cloneref or function(x) return x end
+                        tryParent(_cr(game:GetService("CoreGui")))
+                    end)
+                end
+                if not parented then
+                    local lp2 = Players.LocalPlayer
+                    if lp2 then
+                        local pg2 = lp2:FindFirstChildOfClass("PlayerGui")
+                        if pg2 then tryParent(pg2) end
+                    end
+                end
+            end)
+        end)
+    end
+    _G._FH_CYUTSUD_GUI = GUI
+
+    local isMobile = UserInputService.TouchEnabled and not UserInputService.KeyboardEnabled
+    local isPhone = false
+    if isMobile then
+        local _vp = workspace.CurrentCamera and workspace.CurrentCamera.ViewportSize or Vector2.new(800, 600)
+        local _short = math.min(_vp.X, _vp.Y)
+        isPhone = _short < 600
+    end
+    local isTablet = isMobile and not isPhone
+
+    local _UI = { userPct = 100, desiredScale = 1 }
+    local _gScaleList = {}
+
+    local function _newScale(frame, factor)
+        local f = factor or 1
+        local sc = Instance.new("UIScale")
+        sc.Scale = (_UI.desiredScale or 1) * f
+        sc.Parent = frame
+        table.insert(_gScaleList, {sc = sc, f = f})
+        return sc
+    end
+
+    -- Banner FPS + PING (haut du hub) — thème CyutsudHub (recadré + textes bien alignés)
+    do
+        local StatsService = game:GetService("Stats")
+
+        pcall(function()
+            local old = GUI:FindFirstChild("CyutsudHubBanner")
+            if old then old:Destroy() end
+        end)
+        pcall(function()
+            local lp = Players.LocalPlayer
+            local pg = lp and lp:FindFirstChildOfClass("PlayerGui")
+            if pg then
+                local o = pg:FindFirstChild("UI_Watermark_Gamma")
+                if o then o:Destroy() end
+            end
+        end)
+
+        local function colToRgb(c)
+            if typeof(c) ~= "Color3" then return "235,235,245" end
+            return string.format("%d,%d,%d",
+                math.floor(c.R * 255 + 0.5),
+                math.floor(c.G * 255 + 0.5),
+                math.floor(c.B * 255 + 0.5))
+        end
+
+        -- Cadre capsule, textes parfaitement centrés
+        local banner = Instance.new("Frame")
+        banner.Name                   = "CyutsudHubBanner"
+        banner.Size                   = UDim2.new(0, 340, 0, 96)
+        banner.Position               = UDim2.new(0.5, 0, 0, -100)
+        banner.AnchorPoint            = Vector2.new(0.5, 0)
+        banner.BackgroundColor3       = T.Bg
+        banner.BackgroundTransparency = 0.02
+        banner.BorderSizePixel        = 0
+        banner.ZIndex                 = 100000
+        banner.Active                 = false
+        banner.ClipsDescendants       = true
+        banner.Parent                 = GUI
+        pcall(function() trackBgFrame(banner, "Bg") end)
+        pcall(function() _newScale(banner) end)
+        Corner(banner, 24)
+
+        -- Bordure gradient
+        local borderStroke = GradStroke(banner, 2.2, 0.08, 90)
+        pcall(function()
+            if borderStroke then
+                borderStroke.Thickness = 2.2
+                borderStroke.Transparency = 0.08
+            end
+        end)
+
+        -- Ombre douce
+        local bannerShadow = Instance.new("ImageLabel")
+        bannerShadow.Name                   = "BannerShadow"
+        bannerShadow.Size                   = UDim2.new(1, 40, 1, 40)
+        bannerShadow.Position               = UDim2.new(0, -20, 0, -20)
+        bannerShadow.BackgroundTransparency = 1
+        bannerShadow.Image                  = "rbxassetid://5028857084"
+        bannerShadow.ImageColor3            = Color3.fromRGB(0, 0, 0)
+        bannerShadow.ImageTransparency      = 0.52
+        bannerShadow.ScaleType              = Enum.ScaleType.Slice
+        bannerShadow.SliceCenter            = Rect.new(24, 24, 276, 276)
+        bannerShadow.ZIndex                 = 99999
+        bannerShadow.Parent                 = banner
+
+        -- Conteneur interne pour centrer parfaitement les 4 lignes
+        local content = Instance.new("Frame")
+        content.Name                   = "BannerContent"
+        content.Size                   = UDim2.new(1, -20, 1, -16)
+        content.Position               = UDim2.new(0, 10, 0, 8)
+        content.BackgroundTransparency = 1
+        content.BorderSizePixel        = 0
+        content.ZIndex                 = 100001
+        content.Parent                 = banner
+
+        local list = Instance.new("UIListLayout")
+        list.HorizontalAlignment = Enum.HorizontalAlignment.Center
+        list.VerticalAlignment   = Enum.VerticalAlignment.Center
+        list.Padding             = UDim.new(0, 2)
+        list.SortOrder           = Enum.SortOrder.LayoutOrder
+        list.Parent              = content
+
+        -- 1. Titre CYUTSUD HUB
+        local Title = Instance.new("TextLabel")
+        Title.Name                   = "Title"
+        Title.Size                   = UDim2.new(1, 0, 0, 22)
+        Title.BackgroundTransparency = 1
+        Title.Text                   = "CYUTSUD HUB"
+        Title.TextColor3             = T.Text
+        Title.TextSize               = 20
+        Title.Font                   = Enum.Font.GothamBlack
+        Title.TextXAlignment         = Enum.TextXAlignment.Center
+        Title.TextYAlignment         = Enum.TextYAlignment.Center
+        Title.LayoutOrder            = 1
+        Title.ZIndex                 = 100002
+        Title.Parent                 = content
+        _G._CyutsudBannerTitle = Title
+        local function _CyutsudUpdateBannerTitle(allGearOn)
+            pcall(function()
+                local t = _G._CyutsudBannerTitle
+                if not t or not t.Parent then return end
+                if allGearOn then
+                    t.Text = "CYUTSUD HUB ALL GEAR"
+                    t.TextSize = 16
+                else
+                    t.Text = "CYUTSUD HUB"
+                    t.TextSize = 20
+                end
+            end)
+        end
+        _G._CyutsudUpdateBannerTitle = _CyutsudUpdateBannerTitle
+
+        -- Ensure no logo on the floating banner
+        pcall(function()
+            for _, d in ipairs(banner:GetDescendants()) do
+                if d.Name == "CyutsudSideImage" or d.Name == "LogoBadge" or d.Name == "LogoBox" then
+                    d:Destroy()
+                end
+            end
+        end)
+
+        local titleGrad = Instance.new("UIGradient")
+        titleGrad.Color = themeSeq()
+        titleGrad.Parent = Title
+        table.insert(ThemeGrads, {grad = titleGrad, baseRot = 0, speed = 1})
+
+        -- 2. Crédits
+        local credit = Instance.new("TextLabel")
+        credit.Name                   = "Credit"
+        credit.Size                   = UDim2.new(1, 0, 0, 14)
+        credit.BackgroundTransparency = 1
+        credit.Text                   = "@cyutsud"
+        credit.TextColor3             = T.TextDim
+        credit.TextSize               = 11
+        credit.Font                   = Enum.Font.GothamBold
+        credit.TextXAlignment         = Enum.TextXAlignment.Center
+        credit.TextYAlignment         = Enum.TextYAlignment.Center
+        credit.LayoutOrder            = 2
+        credit.ZIndex                 = 100002
+        credit.Parent                 = content
+
+        -- 3. Discord
+        local disc = Instance.new("TextLabel")
+        disc.Name                   = "Discord"
+        disc.Size                   = UDim2.new(1, 0, 0, 13)
+        disc.BackgroundTransparency = 1
+        disc.Text                   = ""
+        disc.TextColor3             = Theme.c1
+        disc.TextSize               = 11
+        disc.Font                   = Enum.Font.GothamBold
+        disc.TextXAlignment         = Enum.TextXAlignment.Center
+        disc.TextYAlignment         = Enum.TextYAlignment.Center
+        disc.LayoutOrder            = 3
+        disc.ZIndex                 = 100002
+        disc.Parent                 = content
+
+        -- 4. FPS / PING
+        local FpsLabel = Instance.new("TextLabel")
+        FpsLabel.Name                   = "FpsLabel"
+        FpsLabel.Size                   = UDim2.new(1, 0, 0, 15)
+        FpsLabel.BackgroundTransparency = 1
+        FpsLabel.Text                   = "FPS: --  PING: --ms"
+        FpsLabel.TextColor3             = T.Text
+        FpsLabel.TextSize               = 13
+        FpsLabel.Font                   = Enum.Font.GothamBold
+        FpsLabel.RichText               = true
+        FpsLabel.TextXAlignment         = Enum.TextXAlignment.Center
+        FpsLabel.TextYAlignment         = Enum.TextYAlignment.Center
+        FpsLabel.LayoutOrder            = 4
+        FpsLabel.ZIndex                 = 100002
+        FpsLabel.Parent                 = content
+
+        local function paintBannerTheme()
+            pcall(function()
+                banner.BackgroundColor3 = T.Bg
+                Title.TextColor3 = T.Text
+                credit.TextColor3 = T.TextDim
+                disc.TextColor3 = Theme.c1 or T.Primary
+                if titleGrad then
+                    titleGrad.Color = themeSeq()
+                end
+                -- border gradient + stroke follow accent
+                if borderStroke and borderStroke.Parent then
+                    local g = borderStroke:FindFirstChildOfClass("UIGradient")
+                    if g then
+                        g.Color = themeSeq()
+                    else
+                        local ng = Instance.new("UIGradient")
+                        ng.Color = themeSeq()
+                        ng.Rotation = 90
+                        ng.Parent = borderStroke
+                        table.insert(ThemeGrads, {grad = ng, baseRot = 90, speed = 1})
+                    end
+                end
+            end)
+            -- force FPS/PING labels to recolor with new theme
+            _lastBannerFps, _lastBannerPing = -1, -1
+        end
+
+        -- Entrée animée
+        task.spawn(function()
+            task.wait(0.12)
+            TweenService:Create(banner, TweenInfo.new(0.5, Enum.EasingStyle.Quart, Enum.EasingDirection.Out), {
+                Position = UDim2.new(0.5, 0, 0, 78)
+            }):Play()
+            task.wait(0.5)
+            TweenService:Create(banner, TweenInfo.new(0.22, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
+                Position = UDim2.new(0.5, 0, 0, 82)
+            }):Play()
+        end)
+
+        local _lastBannerFps, _lastBannerPing = -1, -1
+
+        _bannerStatsRef = function(fps, ping)
+            if not FpsLabel or not FpsLabel.Parent then return end
+            fps = tonumber(fps) or 0
+            ping = tonumber(ping) or 0
+            if fps == _lastBannerFps and ping == _lastBannerPing then return end
+            _lastBannerFps, _lastBannerPing = fps, ping
+
+            local primary = Theme.c1 or T.Primary or Color3.fromRGB(168, 85, 247)
+            local textCol = T.Text or Color3.fromRGB(245, 240, 255)
+            local amber = Color3.fromRGB(255, 200, 80)
+            local red = Color3.fromRGB(255, 90, 90)
+            -- soft green tinted toward accent for ping OK
+            local _h, _s, _v = Color3.toHSV(primary)
+            local green = Color3.fromHSV(math.clamp(_h * 0.15 + 0.33, 0.28, 0.42), math.clamp(_s * 0.55, 0.35, 0.85), math.max(_v, 0.75))
+
+            local fpsC = (fps >= 55 and primary) or (fps >= 30 and amber) or red
+            local pingC = (ping <= 80 and green) or (ping <= 150 and amber) or red
+
+            FpsLabel.Text = string.format(
+                '<font color="rgb(%s)">FPS: </font><font color="rgb(%s)">%d</font><font color="rgb(%s)">  PING: </font><font color="rgb(%s)">%dms</font>',
+                colToRgb(textCol), colToRgb(fpsC), fps, colToRgb(textCol), colToRgb(pingC), ping
+            )
+        end
+
+        -- Repaint quand le thème change
+        local _oldBroadcast = _G._CyutsudBroadcastTheme
+        _G._CyutsudBroadcastTheme = function(...)
+            if type(_oldBroadcast) == "function" then
+                pcall(_oldBroadcast, ...)
+            end
+            paintBannerTheme()
+            _lastBannerFps, _lastBannerPing = -1, -1
+            if _sharedFps then
+                local ping = 0
+                pcall(function()
+                    local lp = Players.LocalPlayer
+                    if lp then ping = math.floor((lp:GetNetworkPing() or 0) * 1000) end
+                end)
+                if _bannerStatsRef then _bannerStatsRef(_sharedFps, ping) end
+            end
+        end
+
+        -- Fallback autonome
+        task.spawn(function()
+            local frameCount, lastTick, currentFps = 0, tick(), 60
+            local conn
+            conn = RunService.Heartbeat:Connect(function()
+                if not banner or not banner.Parent then
+                    if conn then conn:Disconnect() end
+                    return
+                end
+                frameCount = frameCount + 1
+                local now = tick()
+                if now - lastTick >= 0.5 then
+                    currentFps = math.floor(frameCount / (now - lastTick) + 0.5)
+                    frameCount = 0
+                    lastTick = now
+                end
+            end)
+            while banner and banner.Parent do
+                if _isShuttingDown and _isShuttingDown() then break end
+                local ping = 0
+                pcall(function()
+                    local item = StatsService.Network.ServerStatsItem["Data Ping"]
+                    if item then
+                        ping = math.floor(item:GetValue() + 0.5)
+                    end
+                end)
+                if ping == 0 then
+                    pcall(function()
+                        local lp = Players.LocalPlayer
+                        if lp then
+                            ping = math.floor((lp:GetNetworkPing() or 0) * 1000)
+                        end
+                    end)
+                end
+                local fps = (_sharedFps and _sharedFps > 0) and _sharedFps or currentFps
+                if _bannerStatsRef then
+                    _bannerStatsRef(fps, ping)
+                end
+                task.wait(0.4)
+            end
+            if conn then pcall(function() conn:Disconnect() end) end
+        end)
+
+        _G._CyutsudPaintBannerTheme = paintBannerTheme
+        paintBannerTheme()
+    end
+
+    -- After the Cloner tool activates, select the game's "Change With Cloner" UI action.
+    local function _CyutsudClickChangeWithCloner(timeout)
+        local deadline = os.clock() + (tonumber(timeout) or 2.5)
+        local function scanRoot(root)
+            if not root then return false end
+            local ok, descendants = pcall(function() return root:GetDescendants() end)
+            if not ok or not descendants then return false end
+            for _, obj in ipairs(descendants) do
+                if obj:IsA("TextButton") and obj.Visible then
+                    local label = string.lower((obj.Text or ""):gsub("%s+", " "):match("^%s*(.-)%s*$") or "")
+                    if label:find("change with cloner", 1, true) then
+                        local clicked = pcall(function() obj:Activate() end)
+                        if clicked then return true end
+                    end
+                end
+            end
+            return false
+        end
+        repeat
+            local lp = Players.LocalPlayer
+            local pg = lp and lp:FindFirstChildOfClass("PlayerGui")
+            if scanRoot(pg) then return true end
+            local found = false
+            pcall(function()
+                if type(gethui) == "function" then found = scanRoot(gethui()) end
+            end)
+            if found then return true end
+            found = false
+            pcall(function() found = scanRoot(game:GetService("CoreGui")) end)
+            if found then return true end
+            task.wait(0.1)
+        until os.clock() >= deadline or _isShuttingDown()
+        return false
+    end
+
+    local UIRoot = Instance.new("Frame")
+    UIRoot.Name                   = "UIRoot"
+    UIRoot.Size                   = UDim2.new(1, 0, 1, 0)
+    UIRoot.Position               = UDim2.new(0, 0, 0, 0)
+    UIRoot.BackgroundTransparency = 1
+    UIRoot.BorderSizePixel        = 0
+    UIRoot.Active                 = false
+    UIRoot.ZIndex                 = 1
+    UIRoot.Parent                 = GUI
+
+    local WIN_W, WIN_H
+    if isPhone then
+        WIN_W, WIN_H = 340, 420
+    elseif isMobile then
+        WIN_W, WIN_H = 440, 460
+    else
+        WIN_W, WIN_H = 520, 480
+    end
+
+    local rootScale
+
+    local function _applyUiScale()
+        local cam = workspace.CurrentCamera
+        if not cam then
+            local _t = 0
+            repeat task.wait(0.05); _t = _t + 0.05; cam = workspace.CurrentCamera until cam or _t > 3
+        end
+        local vp  = (cam and cam.ViewportSize) or Vector2.new(1280, 720)
+        local gsz = GUI.AbsoluteSize
+        if gsz and gsz.X > 1 and gsz.Y > 1 then vp = gsz end
+        if vp.X < 1 or vp.Y < 1 then vp = Vector2.new(1280, 720) end
+        local pct = (_UI.userPct or 100) / 100
+        local scale
+        if isMobile then
+            local _short = math.min(vp.X, vp.Y)
+            local _long  = math.max(vp.X, vp.Y)
+            local _curPhone = _short < 600
+            local base = math.clamp(math.min(_long / 1366, _short / 768), 0.50, 1.20)
+            scale = base * (_curPhone and 0.78 or 0.95) * pct
+        else
+            local base = math.clamp(math.min(vp.X / 1920, vp.Y / 1080), 0.63, 1.62)
+            scale = base * pct * 0.91
+        end
+        local fitW = (vp.X * 0.96) / WIN_W
+        local fitH = (vp.Y * 0.94) / WIN_H
+        local cap  = math.max(0.40, math.min(fitW, fitH))
+        _UI.desiredScale = math.clamp(math.min(scale, cap), 0.40, 2.25)
+        if rootScale then rootScale.Scale = _UI.desiredScale end
+        for _, e in ipairs(_gScaleList) do
+            e.sc.Scale = _UI.desiredScale * e.f
+        end
+    end
+
+    local _uiScalePending = false
+    local function _scheduleUiScale()
+        if _uiScalePending then return end
+        _uiScalePending = true
+        task.delay(0.06, function()
+            _uiScalePending = false
+            _applyUiScale()
+        end)
+    end
+
+    task.spawn(
+... (осталось: 3 МБ)
